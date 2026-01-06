@@ -26,6 +26,8 @@ type Server struct {
 
 	httpServer *http.Server
 
+	useFullDomain bool
+
 	logger log.Logger
 }
 
@@ -43,8 +45,9 @@ func NewServer(
 
 	router := gin.New()
 	s := &Server{
-		httpProxy: httpProxy,
-		tcpProxy:  NewTCPProxy(upstreams, httpProxy, logger),
+		httpProxy:     httpProxy,
+		tcpProxy:     NewTCPProxy(upstreams, httpProxy, logger),
+		useFullDomain: proxyConfig.UseFullDomain,
 		httpServer: &http.Server{
 			Handler:           router,
 			TLSConfig:         tlsConfig,
@@ -115,7 +118,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 }
 
 func (s *Server) proxyHTTPRoute(c *gin.Context) {
-	endpointID := EndpointIDFromRequest(c.Request)
+	endpointID := EndpointIDFromRequest(c.Request, s.useFullDomain)
 	if endpointID == "" {
 		s.logger.Warn("request missing endpoint id")
 		c.JSON(
@@ -192,7 +195,10 @@ func (s *Server) panicRoute(c *gin.Context, err any) {
 //
 // This will check both the 'x-piko-endpoint' header and 'Host' header, where
 // x-piko-endpoint takes precedence.
-func EndpointIDFromRequest(r *http.Request) string {
+//
+// If useFullDomain is true, the full domain name is used as the endpoint ID.
+// Otherwise, only the first segment is used (e.g., 'myapp.example.com' -> 'myapp').
+func EndpointIDFromRequest(r *http.Request, useFullDomain bool) string {
 	endpointID := r.Header.Get("x-piko-endpoint")
 	if endpointID != "" {
 		return endpointID
@@ -211,6 +217,12 @@ func EndpointIDFromRequest(r *http.Request) string {
 		// Ignore IP addresses.
 		return ""
 	}
+	
+	if useFullDomain {
+		// Use the full domain name as the endpoint ID.
+		return host
+	}
+	
 	if strings.Contains(host, ".") {
 		// If a host is given and contains a separator, use the bottom-level
 		// domain as the endpoint ID.
@@ -220,7 +232,7 @@ func EndpointIDFromRequest(r *http.Request) string {
 		return strings.Split(host, ".")[0]
 	}
 
-	return ""
+	return host
 }
 
 func init() {

@@ -29,6 +29,9 @@ type Manager interface {
 
 	// RemoveConn removes a local upstream connection.
 	RemoveConn(u Upstream)
+
+	// HasEndpoint checks if an endpoint exists (either locally or on a remote node).
+	HasEndpoint(endpointID string) bool
 }
 
 // loadBalancer load balances requests among upstreams in a round-robin
@@ -163,4 +166,19 @@ func (m *LoadBalancedManager) Endpoints() map[string]int {
 
 func (m *LoadBalancedManager) Metrics() *Metrics {
 	return m.metrics
+}
+
+// HasEndpoint checks if an endpoint exists (either locally or on a remote node).
+func (m *LoadBalancedManager) HasEndpoint(endpointID string) bool {
+	m.mu.Lock()
+	_, hasLocal := m.localUpstreams[endpointID]
+	m.mu.Unlock()
+
+	if hasLocal {
+		return true
+	}
+
+	// Check if the endpoint exists on a remote node.
+	_, hasRemote := m.cluster.LookupEndpoint(endpointID)
+	return hasRemote
 }

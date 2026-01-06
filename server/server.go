@@ -214,6 +214,7 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 	}
 	s.adminServer = admin.NewServer(
 		s.clusterState,
+		upstreams,
 		registry,
 		adminVerifier,
 		adminTLSConfig,

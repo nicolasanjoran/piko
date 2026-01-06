@@ -20,12 +20,15 @@ import (
 	"github.com/andydunstall/piko/pkg/middleware"
 	"github.com/andydunstall/piko/server/cluster"
 	"github.com/andydunstall/piko/server/status"
+	"github.com/andydunstall/piko/server/upstream"
 )
 
 // Server is the admin HTTP server, which exposes endpoints for metrics, health
 // and inspecting the node status.
 type Server struct {
 	clusterState *cluster.State
+
+	upstreams upstream.Manager
 
 	ready *atomic.Bool
 
@@ -42,6 +45,7 @@ type Server struct {
 
 func NewServer(
 	clusterState *cluster.State,
+	upstreams upstream.Manager,
 	registry *prometheus.Registry,
 	verifier *auth.MultiTenantVerifier,
 	tlsConfig *tls.Config,
@@ -52,6 +56,7 @@ func NewServer(
 	router := gin.New()
 	server := &Server{
 		clusterState: clusterState,
+		upstreams:    upstreams,
 		ready:        atomic.NewBool(false),
 		registry:     registry,
 		proxy:        NewReverseProxy(logger),
@@ -119,6 +124,13 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 	router.GET("/health", s.healthRoute)
 	router.GET("/ready", s.readyRoute)
 
+	// Caddy on-demand TLS endpoint
+	// Caddy will call this endpoint to check if a domain is allowed for TLS certificate issuance.
+	// According to Caddy's on-demand TLS documentation, it sends a GET request with the domain
+	// as a query parameter or in the path. We'll support both formats.
+	router.GET("/caddy/check-domain", s.caddyCheckDomainRoute)
+	router.GET("/caddy/check-domain/:domain", s.caddyCheckDomainRoute)
+
 	if s.registry != nil {
 		router.GET("/metrics", s.metricsHandler())
 	}
@@ -149,6 +161,56 @@ func (s *Server) readyRoute(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusOK)
+}
+
+// caddyCheckDomainRoute handles Caddy's on-demand TLS domain validation requests.
+//
+// According to Caddy's on-demand TLS documentation, when using the 'ask' directive,
+// Caddy will make an HTTP request to the configured URL to check if a domain is allowed.
+// The domain can be provided as a query parameter or in the path.
+//
+// This endpoint returns:
+// - 200 OK if the domain is registered as an endpoint (allowed)
+// - 403 Forbidden if the domain is not registered (not allowed)
+//
+// See: https://fivenines.io/blog/caddy-tls-on-demand-complete-guide-to-dynamic-https-with-lets-encrypt/
+func (s *Server) caddyCheckDomainRoute(c *gin.Context) {
+	// Try to get domain from path parameter first
+	domain := c.Param("domain")
+	if domain == "" {
+		// Fall back to query parameter
+		domain = c.Query("domain")
+	}
+	if domain == "" {
+		// Caddy may also send it in the Host header or as a different query param
+		domain = c.Query("host")
+	}
+	if domain == "" {
+		// Last resort: use the Host header
+		domain = c.Request.Host
+	}
+
+	if domain == "" {
+		s.logger.Warn("caddy check domain: missing domain parameter")
+		c.Status(http.StatusBadRequest)
+		return
+	}
+
+	// Check if the domain is registered as an endpoint
+	if s.upstreams != nil && s.upstreams.HasEndpoint(domain) {
+		s.logger.Debug(
+			"caddy check domain: allowed",
+			zap.String("domain", domain),
+		)
+		c.Status(http.StatusOK)
+		return
+	}
+
+	s.logger.Debug(
+		"caddy check domain: denied",
+		zap.String("domain", domain),
+	)
+	c.Status(http.StatusForbidden)
 }
 
 // forwardInterceptor intercepts all admin requests. If the request has a

@@ -214,6 +214,11 @@ type ProxyConfig struct {
 	HTTP HTTPConfig `json:"http" yaml:"http"`
 
 	TLS TLSConfig `json:"tls" yaml:"tls"`
+
+	// UseFullDomain indicates whether to use the full domain name as the endpoint ID
+	// instead of just the first segment. When enabled, a request to 'myapp.example.com'
+	// will use 'myapp.example.com' as the endpoint ID rather than just 'myapp'.
+	UseFullDomain bool `json:"use_full_domain" yaml:"use_full_domain"`
 }
 
 func (c *ProxyConfig) Validate() error {
@@ -274,6 +279,18 @@ Timeout when forwarding incoming requests to the upstream.`,
 	c.Auth.RegisterFlags(fs, "proxy")
 
 	c.TLS.RegisterFlags(fs, "proxy")
+
+	fs.BoolVar(
+		&c.UseFullDomain,
+		"proxy.use-full-domain",
+		c.UseFullDomain,
+		`
+Whether to use the full domain name as the endpoint ID instead of just the first segment.
+
+When enabled, a request to 'myapp.example.com' will use 'myapp.example.com' as the
+endpoint ID rather than just 'myapp'. This is useful when using Caddy or Traefik
+for TLS termination with dynamic domain names.`,
+	)
 }
 
 type UpstreamConfig struct {

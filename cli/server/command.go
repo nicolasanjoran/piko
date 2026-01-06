@@ -75,6 +75,11 @@ Examples:
 			os.Exit(1)
 		}
 
+		// Support PIKO_USE_FULL_DOMAIN environment variable
+		if os.Getenv("PIKO_USE_FULL_DOMAIN") == "true" {
+			conf.Proxy.UseFullDomain = true
+		}
+
 		if conf.Cluster.NodeID == "" {
 			nodeID := cluster.GenerateNodeID()
 			if conf.Cluster.NodeIDPrefix != "" {

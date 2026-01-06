@@ -637,8 +637,15 @@ func TestEndpointIDFromRequest(t *testing.T) {
 	t.Run("host header", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "my-endpoint.piko.com:9000",
-		})
+		}, false)
 		assert.Equal(t, "my-endpoint", endpointID)
+	})
+
+	t.Run("host header with full domain", func(t *testing.T) {
+		endpointID := EndpointIDFromRequest(&http.Request{
+			Host: "my-endpoint.piko.com:9000",
+		}, true)
+		assert.Equal(t, "my-endpoint.piko.com", endpointID)
 	})
 
 	t.Run("x-piko-endpoint header", func(t *testing.T) {
@@ -649,28 +656,47 @@ func TestEndpointIDFromRequest(t *testing.T) {
 			// takes precedence.
 			Host:   "another-endpoint.piko.com:9000",
 			Header: header,
-		})
+		}, false)
+		assert.Equal(t, "my-endpoint", endpointID)
+	})
+
+	t.Run("x-piko-endpoint header with full domain", func(t *testing.T) {
+		header := make(http.Header)
+		header.Add("x-piko-endpoint", "my-endpoint")
+		endpointID := EndpointIDFromRequest(&http.Request{
+			// Even though the host header is provided, 'x-piko-endpoint'
+			// takes precedence.
+			Host:   "another-endpoint.piko.com:9000",
+			Header: header,
+		}, true)
 		assert.Equal(t, "my-endpoint", endpointID)
 	})
 
 	t.Run("ip address", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "127.0.0.1:9000",
-		})
+		}, false)
 		assert.Equal(t, "", endpointID)
 	})
 
 	t.Run("no separator", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "localhost:9000",
-		})
-		assert.Equal(t, "", endpointID)
+		}, false)
+		assert.Equal(t, "localhost", endpointID)
+	})
+
+	t.Run("no separator with full domain", func(t *testing.T) {
+		endpointID := EndpointIDFromRequest(&http.Request{
+			Host: "localhost:9000",
+		}, true)
+		assert.Equal(t, "localhost", endpointID)
 	})
 
 	t.Run("empty host", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "",
-		})
+		}, false)
 		assert.Equal(t, "", endpointID)
 	})
 }
