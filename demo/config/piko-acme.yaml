@@ -60,6 +60,9 @@ acme:
 # With unified_port: true, this is the single entry point for everything
 proxy:
   bind_addr: ":443"
+  # advertise_addr is required if the server can't auto-detect a private IP
+  # Set this to your server's public IP or hostname
+  # advertise_addr: "your-server-ip:443"
   timeout: 30s
   access_log:
     level: info
@@ -73,10 +76,12 @@ proxy:
 # Upstream config (ignored when unified_port is true, but kept for fallback)
 upstream:
   bind_addr: ":8001"
+  # advertise_addr: "your-server-ip:8001"
 
 # Admin server (internal management, HTTP only)
 admin:
   bind_addr: ":8002"
+  # advertise_addr: "your-server-ip:8002"
 
 # Logging configuration
 log:

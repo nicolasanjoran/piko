@@ -585,8 +585,8 @@ func (s *Server) proxyListen() (net.Listener, error) {
 	if s.conf.Proxy.AdvertiseAddr == "" {
 		advertiseAddr, err := advertiseAddrFromListenAddr(ln.Addr().String())
 		if err != nil {
-			// Should never happen.
-			panic("invalid listen address: " + err.Error())
+			ln.Close()
+			return nil, fmt.Errorf("proxy.advertise_addr not set and cannot auto-detect: %w (hint: set proxy.advertise_addr in config)", err)
 		}
 		s.conf.Proxy.AdvertiseAddr = advertiseAddr
 	}
@@ -605,8 +605,8 @@ func (s *Server) upstreamListen() (net.Listener, error) {
 	if s.conf.Upstream.AdvertiseAddr == "" {
 		advertiseAddr, err := advertiseAddrFromListenAddr(ln.Addr().String())
 		if err != nil {
-			// Should never happen.
-			panic("invalid listen address: " + err.Error())
+			ln.Close()
+			return nil, fmt.Errorf("upstream.advertise_addr not set and cannot auto-detect: %w (hint: set upstream.advertise_addr in config)", err)
 		}
 		s.conf.Upstream.AdvertiseAddr = advertiseAddr
 	}
@@ -625,8 +625,8 @@ func (s *Server) adminListen() (net.Listener, error) {
 	if s.conf.Admin.AdvertiseAddr == "" {
 		advertiseAddr, err := advertiseAddrFromListenAddr(ln.Addr().String())
 		if err != nil {
-			// Should never happen.
-			panic("invalid listen address: " + err.Error())
+			ln.Close()
+			return nil, fmt.Errorf("admin.advertise_addr not set and cannot auto-detect: %w (hint: set admin.advertise_addr in config)", err)
 		}
 		s.conf.Admin.AdvertiseAddr = advertiseAddr
 	}
@@ -694,14 +694,55 @@ func advertiseAddrFromListenAddr(bindAddr string) (string, error) {
 	}
 
 	if host == "0.0.0.0" || host == "::" {
-		ip, err := sockaddr.GetPrivateIP()
-		if err != nil {
-			return "", fmt.Errorf("get interface addr: %w", err)
+		// First try to get a private IP (preferred for internal cluster communication)
+		ip, _ := sockaddr.GetPrivateIP()
+		if ip != "" {
+			return ip + ":" + port, nil
 		}
-		if ip == "" {
-			return "", fmt.Errorf("no private ip found")
+
+		// Fall back to public IP (for cloud/container environments)
+		ip, _ = sockaddr.GetPublicIP()
+		if ip != "" {
+			return ip + ":" + port, nil
 		}
-		return ip + ":" + port, nil
+
+		// Last resort: try to find any non-loopback IP
+		ip = getAnyIP()
+		if ip != "" {
+			return ip + ":" + port, nil
+		}
+
+		return "", fmt.Errorf("no IP address found")
 	}
 	return bindAddr, nil
+}
+
+// getAnyIP returns any non-loopback IP address from the system.
+func getAnyIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			if ipnet.IP.IsLoopback() {
+				continue
+			}
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	// Try IPv6 if no IPv4 found
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok {
+			if ipnet.IP.IsLoopback() {
+				continue
+			}
+			if ipnet.IP.To4() == nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return ""
 }
