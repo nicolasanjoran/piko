@@ -1,0 +1,75 @@
+# Example Piko server configuration with automatic TLS via Let's Encrypt.
+#
+# This configuration enables ACME/Let's Encrypt automatic certificate management.
+# Service domains are automatically discovered when agents register them.
+#
+# Prerequisites:
+# 1. A domain name for agents to connect (upstream_domain)
+# 2. DNS records pointing your service domains to this server
+# 3. Port 80 accessible for HTTP-01 challenges (Let's Encrypt verification)
+# 4. Port 443 accessible for HTTPS traffic
+#
+# Usage:
+# 1. Update the upstream_domain and email below with your actual values
+# 2. Start the server: piko server --config.path piko-acme.yaml
+# 3. Configure your agents to connect to the upstream domain
+# 4. Each agent registers with its full domain name as the endpoint ID
+
+# Cluster configuration for multi-node setups
+cluster:
+  join:
+    - piko-1
+    - piko-2
+    - piko-3
+
+# ACME/Let's Encrypt configuration
+acme:
+  # Enable automatic TLS certificate management
+  enabled: true
+  
+  # Contact email for Let's Encrypt notifications (required)
+  email: "admin@example.com"
+  
+  # Domain for the upstream server where agents connect (required)
+  # Agents will connect to: wss://upstream.example.com:8001/piko/v1/upstream/{endpoint}
+  upstream_domain: "upstream.example.com"
+  
+  # Directory to cache TLS certificates (default: .piko/certs)
+  cache_dir: "/var/lib/piko/certs"
+  
+  # Use staging environment for testing (default: false)
+  # Set to true when testing to avoid Let's Encrypt rate limits
+  # staging: true
+  
+  # Port for HTTP-01 challenges (default: 80)
+  # Let's Encrypt requires port 80 to be accessible
+  http_challenge_port: 80
+
+# Proxy server configuration (public-facing HTTPS)
+proxy:
+  # HTTPS port for incoming requests
+  bind_addr: ":443"
+  timeout: 30s
+  access_log:
+    level: info
+  http:
+    read_timeout: 10s
+    read_header_timeout: 10s
+    write_timeout: 10s
+    idle_timeout: 5m
+    max_header_bytes: 1048576
+
+# Upstream server configuration (where agents connect via HTTPS)
+upstream:
+  bind_addr: ":8001"
+
+# Admin server (internal management, not HTTPS)
+admin:
+  bind_addr: ":8002"
+
+# Logging configuration
+log:
+  level: info
+
+# Grace period for graceful shutdown
+grace_period: 1m

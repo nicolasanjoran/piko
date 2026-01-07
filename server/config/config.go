@@ -513,6 +513,9 @@ type Config struct {
 
 	Cluster ClusterConfig `json:"cluster" yaml:"cluster"`
 
+	// ACME configures automatic TLS certificate management via Let's Encrypt.
+	ACME ACMEConfig `json:"acme" yaml:"acme"`
+
 	Log log.Config `json:"log" yaml:"log"`
 
 	// GracePeriod is the duration to gracefully shutdown the server. During
@@ -559,6 +562,11 @@ func Default() *Config {
 				MaxPacketSize: 1400,
 			},
 		},
+		ACME: ACMEConfig{
+			Enabled:           false,
+			CacheDir:          ".piko/certs",
+			HTTPChallengePort: 80,
+		},
 		Log: log.Config{
 			Level: "info",
 		},
@@ -583,6 +591,10 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("admin: %w", err)
 	}
 
+	if err := c.ACME.Validate(); err != nil {
+		return fmt.Errorf("acme: %w", err)
+	}
+
 	if err := c.Log.Validate(); err != nil {
 		return fmt.Errorf("log: %w", err)
 	}
@@ -602,6 +614,8 @@ func (c *Config) RegisterFlags(fs *pflag.FlagSet) {
 	c.Upstream.RegisterFlags(fs)
 
 	c.Admin.RegisterFlags(fs)
+
+	c.ACME.RegisterFlags(fs)
 
 	c.Log.RegisterFlags(fs)
 

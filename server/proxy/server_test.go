@@ -127,6 +127,7 @@ func TestServer_HTTP(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			log.NewNopLogger(),
 		)
 		go func() {
@@ -182,6 +183,7 @@ func TestServer_HTTP(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			log.NewNopLogger(),
 		)
 		go func() {
@@ -222,6 +224,7 @@ func TestServer_HTTP(t *testing.T) {
 				},
 			},
 			config.Default().Proxy,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -266,6 +269,7 @@ func TestServer_HTTP(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			log.NewNopLogger(),
 		)
 		go func() {
@@ -298,6 +302,7 @@ func TestServer_HTTP(t *testing.T) {
 		s := NewServer(
 			nil,
 			config.Default().Proxy,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -347,6 +352,7 @@ func TestServer_TCP(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			log.NewNopLogger(),
 		)
 
@@ -390,6 +396,7 @@ func TestServer_TCP(t *testing.T) {
 				},
 			},
 			config.Default().Proxy,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -455,6 +462,7 @@ func TestServer_Authentication(t *testing.T) {
 			},
 			config.Default().Proxy,
 			nil,
+			nil,
 			verifier,
 			nil,
 			log.NewNopLogger(),
@@ -500,6 +508,7 @@ func TestServer_Authentication(t *testing.T) {
 		s := NewServer(
 			nil,
 			config.Default().Proxy,
+			nil,
 			nil,
 			verifier,
 			nil,
@@ -568,6 +577,7 @@ func TestServer_Authentication(t *testing.T) {
 			},
 			config.Default().Proxy,
 			nil,
+			nil,
 			verifier,
 			nil,
 			log.NewNopLogger(),
@@ -611,6 +621,7 @@ func TestServer_Authentication(t *testing.T) {
 			nil,
 			config.Default().Proxy,
 			nil,
+			nil,
 			verifier,
 			nil,
 			log.NewNopLogger(),
@@ -637,7 +648,7 @@ func TestEndpointIDFromRequest(t *testing.T) {
 	t.Run("host header", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "my-endpoint.piko.com:9000",
-		})
+		}, nil)
 		assert.Equal(t, "my-endpoint", endpointID)
 	})
 
@@ -649,28 +660,64 @@ func TestEndpointIDFromRequest(t *testing.T) {
 			// takes precedence.
 			Host:   "another-endpoint.piko.com:9000",
 			Header: header,
-		})
+		}, nil)
 		assert.Equal(t, "my-endpoint", endpointID)
 	})
 
 	t.Run("ip address", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "127.0.0.1:9000",
-		})
+		}, nil)
 		assert.Equal(t, "", endpointID)
 	})
 
 	t.Run("no separator", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "localhost:9000",
-		})
+		}, nil)
 		assert.Equal(t, "", endpointID)
 	})
 
 	t.Run("empty host", func(t *testing.T) {
 		endpointID := EndpointIDFromRequest(&http.Request{
 			Host: "",
-		})
+		}, nil)
 		assert.Equal(t, "", endpointID)
+	})
+
+	t.Run("full domain with ACME", func(t *testing.T) {
+		acmeConfig := &config.ACMEConfig{
+			Enabled:        true,
+			UpstreamDomain: "upstream.example.com",
+		}
+		// Any domain (except upstream) uses full domain as endpoint ID
+		endpointID := EndpointIDFromRequest(&http.Request{
+			Host: "api.example.com:443",
+		}, acmeConfig)
+		assert.Equal(t, "api.example.com", endpointID)
+	})
+
+	t.Run("upstream domain with ACME", func(t *testing.T) {
+		acmeConfig := &config.ACMEConfig{
+			Enabled:        true,
+			UpstreamDomain: "upstream.example.com",
+		}
+		// Upstream domain should extract subdomain (not use full domain)
+		endpointID := EndpointIDFromRequest(&http.Request{
+			Host: "upstream.example.com:443",
+		}, acmeConfig)
+		assert.Equal(t, "upstream", endpointID)
+	})
+
+	t.Run("ACME disabled uses subdomain", func(t *testing.T) {
+		acmeConfig := &config.ACMEConfig{
+			Enabled:        false,
+			UpstreamDomain: "upstream.example.com",
+		}
+		// When ACME is disabled, extract subdomain as before
+		endpointID := EndpointIDFromRequest(&http.Request{
+			Host: "my-service.example.com:443",
+		}, acmeConfig)
+		assert.Equal(t, "my-service", endpointID)
 	})
 }

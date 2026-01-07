@@ -38,6 +38,8 @@ type ListenerHTTPClientConfig struct {
 
 type ListenerConfig struct {
 	// EndpointID is the endpoint ID to register.
+	// This can be a simple service name (e.g., "my-service") or a full domain
+	// name (e.g., "api.example.com") when using ACME/Let's Encrypt on the server.
 	EndpointID string `json:"endpoint_id" yaml:"endpoint_id"`
 
 	// Addr is the address of the upstream service to forward to.

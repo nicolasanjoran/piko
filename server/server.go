@@ -18,6 +18,7 @@ import (
 	"github.com/andydunstall/piko/pkg/auth"
 	"github.com/andydunstall/piko/pkg/build"
 	"github.com/andydunstall/piko/pkg/log"
+	"github.com/andydunstall/piko/server/acme"
 	"github.com/andydunstall/piko/server/admin"
 	"github.com/andydunstall/piko/server/cluster"
 	"github.com/andydunstall/piko/server/config"
@@ -43,6 +44,10 @@ type Server struct {
 	adminServer *admin.Server
 
 	gossiper *gossip.Gossip
+
+	// acmeManager handles automatic TLS certificate management.
+	// nil if ACME is not enabled.
+	acmeManager *acme.Manager
 
 	conf *config.Config
 
@@ -86,6 +91,15 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 		stopJWKSRefresher: jwksCancel,
 	}
 
+	// Initialize ACME manager if enabled.
+	if conf.ACME.Enabled {
+		acmeManager, err := acme.NewManager(conf.ACME, logger)
+		if err != nil {
+			return nil, fmt.Errorf("acme: %w", err)
+		}
+		s.acmeManager = acmeManager
+	}
+
 	// Proxy listener.
 
 	proxyLn, err := s.proxyListen()
@@ -116,9 +130,18 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 
 	// Cluster.
 
-	proxyTLSConfig, err := conf.Proxy.TLS.Load()
-	if err != nil {
-		return nil, fmt.Errorf("proxy tls: %w", err)
+	// Determine proxy TLS config - use ACME if enabled, otherwise use static config.
+	var proxyTLSConfig *tls.Config
+	if s.acmeManager != nil {
+		// Use ACME for proxy - domains are discovered dynamically from agent registrations
+		proxyTLSConfig = &tls.Config{
+			GetCertificate: s.acmeManager.GetCertificate,
+		}
+	} else {
+		proxyTLSConfig, err = conf.Proxy.TLS.Load()
+		if err != nil {
+			return nil, fmt.Errorf("proxy tls: %w", err)
+		}
 	}
 
 	s.clusterState = cluster.NewState(&cluster.Node{
@@ -151,9 +174,16 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 			auth.NewJWTVerifier(verifierConf), nil,
 		)
 	}
+
+	// Pass ACME config to proxy server for full domain routing.
+	var acmeConfig *config.ACMEConfig
+	if conf.ACME.Enabled {
+		acmeConfig = &conf.ACME
+	}
 	s.proxyServer = proxy.NewServer(
 		upstreams,
 		conf.Proxy,
+		acmeConfig,
 		registry,
 		proxyVerifier,
 		proxyTLSConfig,
@@ -183,9 +213,18 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 			defaultUpstreamVerifier, upstreamTenantVerifiers,
 		)
 	}
-	upstreamTLSConfig, err := conf.Upstream.TLS.Load()
-	if err != nil {
-		return nil, fmt.Errorf("upstream: load tls: %w", err)
+
+	// Determine upstream TLS config - use ACME if enabled, otherwise use static config.
+	var upstreamTLSConfig *tls.Config
+	if s.acmeManager != nil && conf.ACME.UpstreamDomain != "" {
+		upstreamTLSConfig = &tls.Config{
+			GetCertificate: s.acmeManager.GetCertificate,
+		}
+	} else {
+		upstreamTLSConfig, err = conf.Upstream.TLS.Load()
+		if err != nil {
+			return nil, fmt.Errorf("upstream: load tls: %w", err)
+		}
 	}
 	s.upstreamServer = upstream.NewServer(
 		upstreams,
@@ -233,6 +272,13 @@ func (s *Server) Start() error {
 		zap.String("version", build.Version),
 	)
 	s.logger.Debug("piko config", zap.Any("config", s.conf))
+
+	// Start the ACME HTTP challenge server if enabled.
+	if s.acmeManager != nil {
+		if err := s.acmeManager.StartHTTPChallengeServer(); err != nil {
+			return fmt.Errorf("acme: start http challenge server: %w", err)
+		}
+	}
 
 	// Start the admin server. This includes a '/ready' route that will be
 	// false until the server has started.
@@ -341,6 +387,13 @@ func (s *Server) Shutdown() {
 	s.gossiper.Close()
 
 	s.shutdownAdminServer(ctx)
+
+	// Shutdown ACME manager if enabled.
+	if s.acmeManager != nil {
+		if err := s.acmeManager.Shutdown(ctx); err != nil {
+			s.logger.Warn("failed to shutdown ACME manager", zap.Error(err))
+		}
+	}
 
 	s.wg.Wait()
 

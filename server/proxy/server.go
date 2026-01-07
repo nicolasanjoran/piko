@@ -26,12 +26,17 @@ type Server struct {
 
 	httpServer *http.Server
 
+	// acmeConfig is the ACME configuration for full domain routing.
+	// nil if ACME is not enabled.
+	acmeConfig *config.ACMEConfig
+
 	logger log.Logger
 }
 
 func NewServer(
 	upstreams upstream.Manager,
 	proxyConfig config.ProxyConfig,
+	acmeConfig *config.ACMEConfig,
 	registry *prometheus.Registry,
 	verifier *auth.MultiTenantVerifier,
 	tlsConfig *tls.Config,
@@ -43,8 +48,9 @@ func NewServer(
 
 	router := gin.New()
 	s := &Server{
-		httpProxy: httpProxy,
-		tcpProxy:  NewTCPProxy(upstreams, httpProxy, logger),
+		httpProxy:  httpProxy,
+		tcpProxy:   NewTCPProxy(upstreams, httpProxy, logger),
+		acmeConfig: acmeConfig,
 		httpServer: &http.Server{
 			Handler:           router,
 			TLSConfig:         tlsConfig,
@@ -115,7 +121,7 @@ func (s *Server) registerRoutes(router *gin.Engine) {
 }
 
 func (s *Server) proxyHTTPRoute(c *gin.Context) {
-	endpointID := EndpointIDFromRequest(c.Request)
+	endpointID := EndpointIDFromRequest(c.Request, s.acmeConfig)
 	if endpointID == "" {
 		s.logger.Warn("request missing endpoint id")
 		c.JSON(
@@ -192,7 +198,10 @@ func (s *Server) panicRoute(c *gin.Context, err any) {
 //
 // This will check both the 'x-piko-endpoint' header and 'Host' header, where
 // x-piko-endpoint takes precedence.
-func EndpointIDFromRequest(r *http.Request) string {
+//
+// When acmeConfig is provided and ACME is enabled, the full domain name is used
+// as the endpoint ID (except for the upstream domain).
+func EndpointIDFromRequest(r *http.Request, acmeConfig *config.ACMEConfig) string {
 	endpointID := r.Header.Get("x-piko-endpoint")
 	if endpointID != "" {
 		return endpointID
@@ -211,6 +220,13 @@ func EndpointIDFromRequest(r *http.Request) string {
 		// Ignore IP addresses.
 		return ""
 	}
+
+	// When ACME is enabled, use the full domain as the endpoint ID
+	// (except for the upstream domain which is used for agent connections).
+	if acmeConfig != nil && acmeConfig.Enabled && acmeConfig.IsServiceDomain(host) {
+		return host
+	}
+
 	if strings.Contains(host, ".") {
 		// If a host is given and contains a separator, use the bottom-level
 		// domain as the endpoint ID.
