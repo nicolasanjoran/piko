@@ -1,37 +1,40 @@
 # Example Piko agent configuration for connecting to an ACME-enabled server.
 #
-# This configuration demonstrates how to register with a full domain name.
-# The server will automatically obtain a Let's Encrypt certificate for each
-# domain that agents register.
+# With unified_port enabled on the server:
+# - Agents connect to the upstream_domain on port 443
+# - Each agent registers with a full domain name as endpoint_id
+# - Requests to that domain are automatically routed to the agent
+#
+# Prerequisites:
+# 1. DNS records for your service domains must point to the Piko server
+# 2. The server obtains Let's Encrypt certificates automatically
 #
 # Usage:
-# 1. Update the connect URL to point to your Piko server's upstream domain
-# 2. Update the endpoint_id to your desired service domain
-# 3. Update the addr to point to your local service
-# 4. Make sure DNS for your endpoint_id domain points to the Piko server
-# 5. Start the agent: piko agent --config.path agent-acme.yaml
+# 1. Update the connect URL to your server's upstream domain
+# 2. Update endpoint_id to your service domain
+# 3. Update addr to your local service
+# 4. Start the agent: piko agent --config.path agent-acme.yaml
 
-# Connection configuration to the Piko server
+# Connection configuration
 connect:
-  # Connect to the ACME-enabled upstream server via HTTPS
-  url: "https://upstream.example.com:8001"
+  # Connect to the upstream domain (same port as proxy with unified_port)
+  url: "https://upstream.example.com"
   timeout: 30s
 
-# Listeners configuration
-# Each listener registers an endpoint with the Piko server
+# Listeners - each registers a domain with the server
 listeners:
-  # Register with a full domain name
-  # Requests to https://api.mycompany.com will be routed to localhost:3000
-  - endpoint_id: "api.mycompany.com"
+  # Example: Register api.example.com
+  # Requests to https://api.example.com will be routed here
+  - endpoint_id: "api.example.com"
     addr: "http://localhost:3000"
     protocol: http
     timeout: 30s
     access_log:
       level: info
 
-  # Another service on a different domain
-  # Requests to https://dashboard.mycompany.com will be routed to localhost:8080
-  - endpoint_id: "dashboard.mycompany.com"
+  # Example: Register dashboard.example.com
+  # Requests to https://dashboard.example.com will be routed here
+  - endpoint_id: "dashboard.example.com"
     addr: "http://localhost:8080"
     protocol: http
     timeout: 30s
@@ -43,9 +46,9 @@ server:
   enabled: false
   bind_addr: ":5000"
 
-# Logging configuration
+# Logging
 log:
   level: info
 
-# Grace period for graceful shutdown
+# Grace period
 grace_period: 1m

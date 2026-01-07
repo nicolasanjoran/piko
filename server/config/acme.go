@@ -20,6 +20,14 @@ type ACMEConfig struct {
 	// Required when ACME is enabled.
 	UpstreamDomain string `json:"upstream_domain" yaml:"upstream_domain"`
 
+	// UnifiedPort combines the proxy and upstream servers on a single port.
+	// When enabled, both proxy and upstream run on the proxy port (typically 443).
+	// Routing is based on the domain:
+	// - Requests to upstream_domain are handled as agent WebSocket connections
+	// - Requests to any other domain are proxied to registered services
+	// The upstream.bind_addr config is ignored when this is enabled.
+	UnifiedPort bool `json:"unified_port" yaml:"unified_port"`
+
 	// CacheDir is the directory to cache TLS certificates.
 	// Defaults to ".piko/certs" if not specified.
 	CacheDir string `json:"cache_dir" yaml:"cache_dir"`
@@ -81,6 +89,19 @@ Domain for the upstream server where agents connect.
 
 Required when ACME is enabled. Agents will connect to this domain via
 WebSocket over HTTPS to register their endpoints.`,
+	)
+
+	fs.BoolVar(
+		&c.UnifiedPort,
+		"acme.unified-port",
+		c.UnifiedPort,
+		`
+Combine the proxy and upstream servers on a single port.
+
+When enabled, agents connect to the same port as the proxy using the
+upstream_domain, and the upstream.bind_addr config is ignored.
+Requests to /piko/v1/upstream/* are handled as agent connections,
+all other requests are proxied to registered services.`,
 	)
 
 	fs.StringVar(

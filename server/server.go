@@ -24,6 +24,7 @@ import (
 	"github.com/andydunstall/piko/server/config"
 	"github.com/andydunstall/piko/server/gossip"
 	"github.com/andydunstall/piko/server/proxy"
+	"github.com/andydunstall/piko/server/unified"
 	"github.com/andydunstall/piko/server/upstream"
 )
 
@@ -36,6 +37,10 @@ type Server struct {
 
 	upstreamLn     net.Listener
 	upstreamServer *upstream.Server
+
+	// unifiedServer combines proxy and upstream on a single port.
+	// Only used when ACME unified_port is enabled.
+	unifiedServer *unified.Server
 
 	rebalanceCtx    context.Context
 	rebalanceCancel context.CancelFunc
@@ -100,21 +105,21 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 		s.acmeManager = acmeManager
 	}
 
-	// Proxy listener.
-
+	// Proxy listener (also used for unified server).
 	proxyLn, err := s.proxyListen()
 	if err != nil {
 		return nil, fmt.Errorf("proxy listen: %w", err)
 	}
 	s.proxyLn = proxyLn
 
-	// Upstream listener.
-
-	upstreamLn, err := s.upstreamListen()
-	if err != nil {
-		return nil, fmt.Errorf("upstream listen: %w", err)
+	// Upstream listener (not used when unified port is enabled).
+	if !conf.ACME.Enabled || !conf.ACME.UnifiedPort {
+		upstreamLn, err := s.upstreamListen()
+		if err != nil {
+			return nil, fmt.Errorf("upstream listen: %w", err)
+		}
+		s.upstreamLn = upstreamLn
 	}
-	s.upstreamLn = upstreamLn
 
 	rebalanceCtx, rebalanceCancel := context.WithCancel(context.Background())
 	s.rebalanceCtx = rebalanceCtx
@@ -175,23 +180,7 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 		)
 	}
 
-	// Pass ACME config to proxy server for full domain routing.
-	var acmeConfig *config.ACMEConfig
-	if conf.ACME.Enabled {
-		acmeConfig = &conf.ACME
-	}
-	s.proxyServer = proxy.NewServer(
-		upstreams,
-		conf.Proxy,
-		acmeConfig,
-		registry,
-		proxyVerifier,
-		proxyTLSConfig,
-		logger,
-	)
-
-	// Upstream server.
-
+	// Build upstream verifier (used by both unified and separate servers).
 	var upstreamVerifier *auth.MultiTenantVerifier
 	if conf.Upstream.Auth.Enabled() || len(conf.Upstream.Tenants) > 0 {
 		verifierConf, err := conf.Upstream.Auth.Load(jwksCtx)
@@ -214,26 +203,60 @@ func NewServer(conf *config.Config, logger log.Logger) (*Server, error) {
 		)
 	}
 
-	// Determine upstream TLS config - use ACME if enabled, otherwise use static config.
-	var upstreamTLSConfig *tls.Config
-	if s.acmeManager != nil && conf.ACME.UpstreamDomain != "" {
-		upstreamTLSConfig = &tls.Config{
-			GetCertificate: s.acmeManager.GetCertificate,
-		}
+	// Create servers based on configuration.
+	if conf.ACME.Enabled && conf.ACME.UnifiedPort {
+		// Unified server: proxy and upstream on single port, routed by domain.
+		s.unifiedServer = unified.NewServer(
+			upstreams,
+			conf.Proxy,
+			conf.Upstream,
+			&conf.ACME,
+			registry,
+			proxyVerifier,
+			upstreamVerifier,
+			proxyTLSConfig,
+			s.clusterState,
+			logger,
+		)
 	} else {
-		upstreamTLSConfig, err = conf.Upstream.TLS.Load()
-		if err != nil {
-			return nil, fmt.Errorf("upstream: load tls: %w", err)
+		// Separate servers for proxy and upstream.
+
+		// Pass ACME config to proxy server for full domain routing.
+		var acmeConfig *config.ACMEConfig
+		if conf.ACME.Enabled {
+			acmeConfig = &conf.ACME
 		}
+		s.proxyServer = proxy.NewServer(
+			upstreams,
+			conf.Proxy,
+			acmeConfig,
+			registry,
+			proxyVerifier,
+			proxyTLSConfig,
+			logger,
+		)
+
+		// Determine upstream TLS config - use ACME if enabled, otherwise use static config.
+		var upstreamTLSConfig *tls.Config
+		if s.acmeManager != nil && conf.ACME.UpstreamDomain != "" {
+			upstreamTLSConfig = &tls.Config{
+				GetCertificate: s.acmeManager.GetCertificate,
+			}
+		} else {
+			upstreamTLSConfig, err = conf.Upstream.TLS.Load()
+			if err != nil {
+				return nil, fmt.Errorf("upstream: load tls: %w", err)
+			}
+		}
+		s.upstreamServer = upstream.NewServer(
+			upstreams,
+			upstreamVerifier,
+			upstreamTLSConfig,
+			s.clusterState,
+			conf.Upstream,
+			logger,
+		)
 	}
-	s.upstreamServer = upstream.NewServer(
-		upstreams,
-		upstreamVerifier,
-		upstreamTLSConfig,
-		s.clusterState,
-		conf.Upstream,
-		logger,
-	)
 
 	// Admin server.
 
@@ -311,10 +334,13 @@ func (s *Server) Start() error {
 		s.logger.Info("joined cluster", zap.Strings("node-ids", nodeIDs))
 	}
 
-	// Now we've attempted to join the cluster, we can start the upstream
-	// server and proxy server.
-	s.startUpstreamServer()
-	s.startProxyServer()
+	// Now we've attempted to join the cluster, we can start the servers.
+	if s.unifiedServer != nil {
+		s.startUnifiedServer()
+	} else {
+		s.startUpstreamServer()
+		s.startProxyServer()
+	}
 
 	// Now we've joined the cluster and started all servers, mark the server
 	// as ready to begin accepting requests.
@@ -362,19 +388,25 @@ func (s *Server) Shutdown() {
 	// Set the ready to false to stop incoming traffic.
 	s.adminServer.SetReady(false)
 
-	// Shutdown the upstream server and close active upstream connections.
-	//
-	// We close upstream connections first since as long as we have upstream
-	// connections, we'll receive requests from other nodes in the cluster
-	// routing requests to our upstreams.
-	//
-	// We could still get requests from the proxy server but they'll be routed
-	// to other nodes.
-	s.shutdownUpstreamServer(ctx)
+	// Shutdown the servers.
+	if s.unifiedServer != nil {
+		// Unified server handles both proxy and upstream.
+		s.shutdownUnifiedServer(ctx)
+	} else {
+		// Shutdown the upstream server and close active upstream connections.
+		//
+		// We close upstream connections first since as long as we have upstream
+		// connections, we'll receive requests from other nodes in the cluster
+		// routing requests to our upstreams.
+		//
+		// We could still get requests from the proxy server but they'll be routed
+		// to other nodes.
+		s.shutdownUpstreamServer(ctx)
 
-	// Now we no longer have any connected upstreams, we'll no longer get
-	// requests from other cluster nodes so can shut down the proxy server.
-	s.shutdownProxyServer(ctx)
+		// Now we no longer have any connected upstreams, we'll no longer get
+		// requests from other cluster nodes so can shut down the proxy server.
+		s.shutdownProxyServer(ctx)
+	}
 
 	// Leave the cluster.
 	if err := s.gossiper.Leave(ctx); err != nil {
@@ -482,6 +514,19 @@ func (s *Server) startUpstreamServer() {
 	}
 }
 
+func (s *Server) startUnifiedServer() {
+	s.runGoroutine(func() {
+		if err := s.unifiedServer.Serve(s.proxyLn); err != nil {
+			s.logger.Error("failed to run unified server", zap.Error(err))
+		}
+	})
+	if s.conf.Upstream.Rebalance.Threshold != 0 {
+		s.runGoroutine(func() {
+			s.unifiedRebalance()
+		})
+	}
+}
+
 func (s *Server) startAdminServer() {
 	s.runGoroutine(func() {
 		if err := s.adminServer.Serve(s.adminLn); err != nil {
@@ -491,6 +536,9 @@ func (s *Server) startAdminServer() {
 }
 
 func (s *Server) shutdownProxyServer(ctx context.Context) {
+	if s.proxyServer == nil {
+		return
+	}
 	if err := s.proxyServer.Shutdown(ctx); err != nil {
 		s.logger.Error("failed to shutdown proxy server", zap.Error(err))
 	}
@@ -498,11 +546,25 @@ func (s *Server) shutdownProxyServer(ctx context.Context) {
 }
 
 func (s *Server) shutdownUpstreamServer(ctx context.Context) {
+	if s.upstreamServer == nil {
+		return
+	}
 	s.rebalanceCancel()
 	if err := s.upstreamServer.Shutdown(ctx); err != nil {
 		s.logger.Error("failed to shutdown upstream server", zap.Error(err))
 	}
 	s.logger.Info("shutdown upstream server")
+}
+
+func (s *Server) shutdownUnifiedServer(ctx context.Context) {
+	if s.unifiedServer == nil {
+		return
+	}
+	s.rebalanceCancel()
+	if err := s.unifiedServer.Shutdown(ctx); err != nil {
+		s.logger.Error("failed to shutdown unified server", zap.Error(err))
+	}
+	s.logger.Info("shutdown unified server")
 }
 
 func (s *Server) shutdownAdminServer(ctx context.Context) {
@@ -581,6 +643,20 @@ func (s *Server) upstreamRebalance() {
 		select {
 		case <-ticker.C:
 			s.upstreamServer.Rebalance()
+		case <-s.rebalanceCtx.Done():
+			return
+		}
+	}
+}
+
+func (s *Server) unifiedRebalance() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.unifiedServer.Rebalance()
 		case <-s.rebalanceCtx.Done():
 			return
 		}

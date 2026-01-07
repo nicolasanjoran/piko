@@ -1,19 +1,25 @@
 # Example Piko server configuration with automatic TLS via Let's Encrypt.
 #
-# This configuration enables ACME/Let's Encrypt automatic certificate management.
-# Service domains are automatically discovered when agents register them.
+# This configuration enables ACME/Let's Encrypt automatic certificate management
+# with a unified port - both proxy and agent connections on the same port (443).
+#
+# How it works:
+# - Requests to the upstream_domain are handled as agent WebSocket connections
+# - Requests to any other domain are proxied to registered services
+# - Certificates are obtained automatically via Let's Encrypt
 #
 # Prerequisites:
-# 1. A domain name for agents to connect (upstream_domain)
-# 2. DNS records pointing your service domains to this server
-# 3. Port 80 accessible for HTTP-01 challenges (Let's Encrypt verification)
-# 4. Port 443 accessible for HTTPS traffic
+# 1. DNS records:
+#    - upstream.example.com → your server (for agent connections)
+#    - *.example.com or specific domains → your server (for services)
+# 2. Port 80 accessible for HTTP-01 challenges (Let's Encrypt verification)
+# 3. Port 443 accessible for HTTPS traffic
 #
 # Usage:
-# 1. Update the upstream_domain and email below with your actual values
+# 1. Update the upstream_domain and email with your actual values
 # 2. Start the server: piko server --config.path piko-acme.yaml
-# 3. Configure your agents to connect to the upstream domain
-# 4. Each agent registers with its full domain name as the endpoint ID
+# 3. Agents connect to wss://upstream.example.com/piko/v1/upstream/{endpoint}
+# 4. Services are accessed via https://{endpoint} (e.g., https://api.example.com)
 
 # Cluster configuration for multi-node setups
 cluster:
@@ -30,9 +36,15 @@ acme:
   # Contact email for Let's Encrypt notifications (required)
   email: "admin@example.com"
   
-  # Domain for the upstream server where agents connect (required)
-  # Agents will connect to: wss://upstream.example.com:8001/piko/v1/upstream/{endpoint}
+  # Domain for agent connections (required)
+  # Agents connect here via WebSocket to register their endpoints
   upstream_domain: "upstream.example.com"
+  
+  # Combine proxy and upstream on a single port (recommended)
+  # When enabled:
+  # - Requests to upstream_domain → agent WebSocket connections
+  # - Requests to any other domain → proxied to services
+  unified_port: true
   
   # Directory to cache TLS certificates (default: .piko/certs)
   cache_dir: "/var/lib/piko/certs"
@@ -42,12 +54,11 @@ acme:
   # staging: true
   
   # Port for HTTP-01 challenges (default: 80)
-  # Let's Encrypt requires port 80 to be accessible
   http_challenge_port: 80
 
-# Proxy server configuration (public-facing HTTPS)
+# Proxy server configuration
+# With unified_port: true, this is the single entry point for everything
 proxy:
-  # HTTPS port for incoming requests
   bind_addr: ":443"
   timeout: 30s
   access_log:
@@ -59,11 +70,11 @@ proxy:
     idle_timeout: 5m
     max_header_bytes: 1048576
 
-# Upstream server configuration (where agents connect via HTTPS)
+# Upstream config (ignored when unified_port is true, but kept for fallback)
 upstream:
   bind_addr: ":8001"
 
-# Admin server (internal management, not HTTPS)
+# Admin server (internal management, HTTP only)
 admin:
   bind_addr: ":8002"
 
